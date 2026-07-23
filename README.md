@@ -158,8 +158,35 @@ Cloud 和 Self-Hosted 工作流共享相同的输入参数：
 ### Self-Hosted (`build-selfhosted.yml`)
 - 依赖预装，跳过 apt-get
 - 源码持久化到 `/data/openwrt/`（增量拉取）
-- 产物保存到 `/data/artifacts/<device>/<variant>/<date>/`
+- 产物保存到 `/data/artifacts/<device>/<variant>/<date>/`（无 `/data` 权限时自动回退到 `$HOME/artifacts/`）
 - 1440 分钟（24h）超时，不上传 Release
+
+#### 自托管 Runner 环境准备
+
+编译前需确保主机已安装所有 OpenWrt 编译依赖：
+
+```bash
+# Ubuntu 24.04 — 一次性环境准备
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential ecj fastjar file flex g++ gcc-multilib g++-multilib \
+  gawk gettext git git-core java-propose-classpath libelf-dev libncurses5-dev \
+  libncursesw5-dev libssl-dev swig python3 python3-pip python3-dev \
+  python3-setuptools python3-pyelftools subversion unzip wget zlib1g-dev \
+  rsync qemu-utils zip libfuse-dev neofetch p7zip-full curl \
+  device-tree-compiler gperf haveged help2man intltool libc6-dev-i386 \
+  libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+  libncurses-dev libpython3-dev libreadline-dev libtool libyaml-dev \
+  libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build p7zip patch \
+  pkgconf python3-ply python3-docutils re2c scons squashfs-tools \
+  texinfo uglifyjs upx-ucl vim xmlto xxd zstd
+
+# 创建构建和产物目录 (如使用默认 /data 路径)
+sudo mkdir -p /data/openwrt /data/artifacts
+sudo chown -R $(whoami):$(whoami) /data
+```
+
+> 提示: 如果不想使用 `/data`，可以修改 `build-selfhosted.yml` 中 `with.workdir` 的值（如改为 `$HOME/openwrt`），产物会自动回退到 `$HOME/artifacts/`。
 
 ## 触发方式
 
