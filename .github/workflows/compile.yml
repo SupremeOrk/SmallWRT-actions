@@ -162,9 +162,11 @@ jobs:
 
       - name: 创建工作目录
         run: |
-          mkdir -p "${{ inputs.workdir }}"
           if [ "${{ inputs.runner }}" = "ubuntu-24.04" ]; then
+            sudo mkdir -p "${{ inputs.workdir }}"
             sudo chown "$USER:$GROUPS" "${{ inputs.workdir }}"
+          else
+            mkdir -p "${{ inputs.workdir }}"
           fi
 
       - name: 释放磁盘空间 (Cloud)
