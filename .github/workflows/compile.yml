@@ -206,7 +206,6 @@ jobs:
             git fetch origin "$SOURCE_BRANCH"
             git reset --hard "origin/$SOURCE_BRANCH"
           else
-            rm -rf "${{ inputs.workdir }}"
             git clone --branch "$SOURCE_BRANCH" "$SOURCE_REPO" "${{ inputs.workdir }}"
           fi
 
