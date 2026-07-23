@@ -46,7 +46,9 @@ jobs:
       actions: read
     with:
       runner: 'self-hosted'
-      workdir: '/data/openwrt'
+      # This runner stores its incremental source tree in the writable
+      # workspace volume; /data is not available on the build host.
+      workdir: '/srv/workspace/.smallwrt-actions/openwrt'
       upload_artifacts: 'false'
       create_release: 'false'
       config_variant: ${{ github.event.inputs.config_variant }}

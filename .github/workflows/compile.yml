@@ -361,12 +361,19 @@ jobs:
           TARGET_NAME="${TARGET_PATH#bin/targets/}"
           echo "输出: $TARGET_PATH ($TARGET_NAME)"
 
-          7z a -mx=9 -mmt=$(nproc) bin.7z bin/
-          mv bin.7z make.log "$TARGET_PATH/"
+          if command -v 7z >/dev/null; then
+            7z a -mx=9 -mmt=$(nproc) bin.7z bin/
+            archive=bin.7z
+          else
+            echo '7z is unavailable on this self-hosted runner; creating a zstd tarball instead.'
+            tar --zstd -cf bin.tar.zst bin/
+            archive=bin.tar.zst
+          fi
+          mv "$archive" make.log "$TARGET_PATH/"
           cd "$TARGET_PATH" && rm -rf packages
 
           echo "固件列表:"
-          ls -la *.bin *.img *.trx *.7z *.log 2>/dev/null || true
+          ls -la *.bin *.img *.trx *.7z *.tar.zst *.log 2>/dev/null || true
 
           echo "TARGET_DIR=${TARGET_PATH}" >> $GITHUB_ENV
           echo "TARGET_NAME=$TARGET_NAME" >> $GITHUB_ENV
