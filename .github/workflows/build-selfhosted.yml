@@ -19,6 +19,7 @@ on:
         default: 'full'
         options:
           - full
+          - full-remove-unused-package
           - seed
       preset_clash:
         description: '预置 OpenClash Meta 核心 + GeoIP 数据'
@@ -46,7 +47,9 @@ jobs:
       actions: read
     with:
       runner: 'self-hosted'
-      workdir: '/data/openwrt'
+      # This runner stores its incremental source tree in the writable
+      # workspace volume; /data is not available on the build host.
+      workdir: '/srv/workspace/.smallwrt-actions/openwrt'
       upload_artifacts: 'false'
       create_release: 'false'
       config_variant: ${{ github.event.inputs.config_variant }}
