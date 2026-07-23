@@ -1,0 +1,452 @@
+# compile.yml — ImmortalWrt 固件编译 (可复用工作流)
+#
+# 被 build-cloud.yml 和 build-selfhosted.yml 调用。
+# 不直接触发 — 使用对应的 caller 工作流。
+#
+# Licensed under GNU GPLv3. See /LICENSE.
+
+name: 编译 ImmortalWrt (可复用)
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: 'ubuntu-24.04'
+      workdir:
+        type: string
+        default: '/workdir/openwrt'
+      upload_artifacts:
+        type: string
+        default: 'true'
+      create_release:
+        type: string
+        default: 'true'
+      config_variant:
+        type: string
+        default: 'full'
+      preset_clash:
+        type: string
+        default: 'true'
+      preset_zsh:
+        type: string
+        default: 'true'
+      preset_snapshot:
+        type: string
+        default: 'true'
+      preset_branding:
+        type: string
+        default: 'true'
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  # =========================================================================
+  # prepare — 环境就绪检查 + 配置选择 + 源码变更检测
+  # =========================================================================
+  prepare:
+    runs-on: ${{ inputs.runner }}
+    outputs:
+      config_file: ${{ steps.resolve.outputs.config_file }}
+      config_variant: ${{ steps.resolve.outputs.config_variant }}
+      skip: ${{ steps.check-source.outputs.skip }}
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@main
+        with:
+          fetch-depth: 1
+
+      - name: 加载设备定义
+        id: device
+        run: |
+          source "${{ github.workspace }}/device.conf"
+          echo "设备: $DEVICE_TITLE"
+          echo "芯片: $CHIP_NAME"
+          echo "源码: $SOURCE_REPO ($SOURCE_BRANCH)"
+          echo "device_name=$DEVICE_NAME" >> $GITHUB_OUTPUT
+          echo "source_repo=$SOURCE_REPO" >> $GITHUB_OUTPUT
+          echo "source_branch=$SOURCE_BRANCH" >> $GITHUB_OUTPUT
+          echo "config_prefix=$CONFIG_PREFIX" >> $GITHUB_OUTPUT
+
+      - name: 检查源码更新
+        id: check-source
+        run: |
+          source "${{ github.workspace }}/device.conf"
+          TRACK_FILE="${{ github.workspace }}/source-track.txt"
+
+          current_sha=$(git ls-remote "$SOURCE_REPO" "refs/heads/$SOURCE_BRANCH" 2>/dev/null | awk '{print $1}')
+          if [ -z "$current_sha" ]; then
+            echo "::warning::无法获取分支 $SOURCE_BRANCH 的提交 ID"
+            current_sha="unknown"
+          fi
+          echo "远端最新提交: $current_sha"
+
+          stored_sha=$(grep -v '^[[:space:]]*#' "$TRACK_FILE" 2>/dev/null | awk -F= -v b="$SOURCE_BRANCH" '$1 == b {print $2}')
+          echo "本地记录提交: ${stored_sha:-无}"
+
+          if [ "$current_sha" != "unknown" ]; then
+            if grep -q "^${SOURCE_BRANCH}=" "$TRACK_FILE" 2>/dev/null; then
+              sed -i "s|^${SOURCE_BRANCH}=.*|${SOURCE_BRANCH}=${current_sha}|" "$TRACK_FILE"
+            else
+              echo "${SOURCE_BRANCH}=${current_sha}" >> "$TRACK_FILE"
+            fi
+          fi
+
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$stored_sha" = "$current_sha" ]; then
+            echo "源码未变更，跳过编译"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            [ "${{ github.event_name }}" != "schedule" ] && echo "手动触发，跳过变更检测" || echo "检测到源码变更"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 提交源码跟踪记录
+        if: github.event_name == 'schedule'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add source-track.txt
+          if git diff --cached --quiet; then
+            echo "跟踪文件无变更"
+          else
+            git commit -m "track: update source commit [skip ci]"
+            git push
+          fi
+
+      - name: 解析配置选择
+        id: resolve
+        if: steps.check-source.outputs.skip != 'true'
+        run: |
+          source "${{ github.workspace }}/device.conf"
+
+          VARIANT="${{ inputs.config_variant }}"
+          CONFIG_FILE="configs/${CONFIG_PREFIX}-${VARIANT}.config"
+
+          if [ ! -f "${{ github.workspace }}/${CONFIG_FILE}" ]; then
+            echo "::error::配置文件未找到: $CONFIG_FILE"
+            echo "可用配置:"
+            find "${{ github.workspace }}/configs" -name "${CONFIG_PREFIX}-*.config" -exec basename {} \;
+            exit 1
+          fi
+
+          echo "配置变体: $VARIANT → $CONFIG_FILE"
+          echo "config_file=${{ github.workspace }}/${CONFIG_FILE}" >> $GITHUB_OUTPUT
+          echo "config_variant=${VARIANT}" >> $GITHUB_OUTPUT
+
+  # =========================================================================
+  # compile — 拉取源码 → 准备环境 → 编译 → 打包发布
+  # =========================================================================
+  compile:
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true' && needs.prepare.outputs.config_file != ''
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.runner == 'ubuntu-24.04' && 360 || 1440 }}
+    env:
+      OPENWRT_DIR: ${{ inputs.workdir }}
+    steps:
+      # ---- 基础环境 ----
+      - name: 检出仓库
+        uses: actions/checkout@main
+        with:
+          fetch-depth: 1
+
+      - name: 设置时区
+        run: |
+          if [ "${{ inputs.runner }}" = "ubuntu-24.04" ]; then
+            sudo timedatectl set-timezone "$TZ"
+          else
+            timedatectl set-timezone "$TZ" 2>/dev/null || true
+          fi
+          date
+
+      - name: 创建工作目录
+        run: |
+          mkdir -p "${{ inputs.workdir }}"
+          if [ "${{ inputs.runner }}" = "ubuntu-24.04" ]; then
+            sudo chown "$USER:$GROUPS" "${{ inputs.workdir }}"
+          fi
+
+      - name: 释放磁盘空间 (Cloud)
+        if: inputs.runner == 'ubuntu-24.04'
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: 安装编译依赖 (Cloud)
+        if: inputs.runner == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ecj fastjar file flex g++ gcc-multilib g++-multilib gawk gettext git git-core \
+            java-propose-classpath libelf-dev libncurses5-dev libncursesw5-dev libssl-dev swig python3 \
+            python3-pip python3-dev python3-setuptools python3-pyelftools subversion unzip wget zlib1g-dev \
+            rsync qemu-utils zip libfuse-dev neofetch p7zip-full curl device-tree-compiler gperf haveged \
+            help2man intltool lib32gcc-s1 libc6-dev-i386 libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
+            libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libtool libyaml-dev libz-dev lld llvm \
+            lrzsz mkisofs msmtp nano ninja-build p7zip patch pkgconf python3-ply python3-docutils re2c \
+            scons squashfs-tools texinfo uglifyjs upx-ucl vim xmlto xxd zstd
+          pip install requests tqdm
+
+      # ---- 源码 ----
+      - name: 拉取源码
+        working-directory: ${{ inputs.workdir }}
+        run: |
+          source "${{ github.workspace }}/device.conf"
+          if [ -d "openwrt/.git" ]; then
+            echo "检测到已有源码，增量更新..."
+            cd openwrt
+            git fetch origin "$SOURCE_BRANCH"
+            git reset --hard "origin/$SOURCE_BRANCH"
+          else
+            rm -rf openwrt
+            git clone --branch "$SOURCE_BRANCH" "$SOURCE_REPO" openwrt
+          fi
+
+      - name: 链接源码目录
+        run: ln -sf "${{ inputs.workdir }}" "${{ github.workspace }}/openwrt"
+
+      # ---- Feeds ----
+      - name: 更新并安装 Feeds
+        working-directory: ${{ inputs.workdir }}
+        run: |
+          bash "${{ github.workspace }}/scripts/diy/01-clone-plugins.sh"
+          ./scripts/feeds update -a
+          bash "${{ github.workspace }}/scripts/diy/02-replace-openclash.sh"
+          ./scripts/feeds install -a
+
+      # ---- 配置 ----
+      - name: 准备编译配置
+        id: config
+        working-directory: ${{ inputs.workdir }}
+        run: |
+          source "${{ github.workspace }}/scripts/lib.sh"
+          log_info "复制配置文件: ${{ needs.prepare.outputs.config_file }}"
+          cp "${{ needs.prepare.outputs.config_file }}" .config
+          make defconfig
+
+          log_info "部署静态文件覆盖层..."
+          mkdir -p files
+          cp -r "${{ github.workspace }}/files"/* ./files/
+
+          echo "config_ready=true" >> $GITHUB_OUTPUT
+
+      # ---- 预设脚本 ----
+      - name: 执行构建预设
+        working-directory: ${{ inputs.workdir }}
+        run: |
+          source "${{ github.workspace }}/scripts/lib.sh"
+          source "${{ github.workspace }}/device.conf"
+
+          export OPENWRT_DIR="${{ inputs.workdir }}"
+          export GITHUB_WORKSPACE="${{ github.workspace }}"
+          export CLASH_ARCH="$CLASH_ARCH"
+
+          PRESET_DIR="${{ github.workspace }}/scripts/presets"
+          EXECUTED=0
+
+          for script in "$PRESET_DIR"/*.sh; do
+            [ -f "$script" ] || continue
+            meta=$(parse_preset_meta "$script")
+            pname=$(echo "$meta" | cut -d'|' -f1)
+            ptype=$(echo "$meta" | cut -d'|' -f2)
+            pdesc=$(echo "$meta" | cut -d'|' -f3)
+
+            case "$pname" in
+              clash-core)
+                [ "${{ inputs.preset_clash }}" != "true" ] && { log_info "跳过预设: $pname (未启用)"; continue; }
+                ;;
+              terminal-tools)
+                [ "${{ inputs.preset_zsh }}" != "true" ] && { log_info "跳过预设: $pname (未启用)"; continue; }
+                ;;
+              snapshot-settings)
+                [ "${{ inputs.preset_snapshot }}" != "true" ] && { log_info "跳过预设: $pname (未启用)"; continue; }
+                ;;
+              smallwrt-branding)
+                [ "${{ inputs.preset_branding }}" != "true" ] && { log_info "跳过预设: $pname (未启用)"; continue; }
+                ;;
+              *)
+                log_warn "未知预设: $pname，跳过"
+                continue
+                ;;
+            esac
+
+            log_info "执行预设: $pname ($pdesc)"
+            bash "$script"
+            EXECUTED=$((EXECUTED + 1))
+          done
+
+          log_info "共执行 $EXECUTED 个预设"
+
+          find files/etc/uci-defaults -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
+
+      # ---- 编译 ----
+      - name: 编译固件
+        id: compile
+        working-directory: ${{ inputs.workdir }}
+        run: |
+          source "${{ github.workspace }}/scripts/lib.sh"
+          THREAD_COUNT=$(($(nproc) + 1))
+          log_info "开始编译 ($THREAD_COUNT 线程)..."
+
+          make -j$THREAD_COUNT 2>&1 | tee make.log
+          EXIT_CODE=${PIPESTATUS[0]}
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            log_warn "多线程编译失败 (退出码: $EXIT_CODE)，切换单线程重试..."
+            make -j1 V=s 2>&1 | tee -a make.log
+            EXIT_CODE=${PIPESTATUS[0]}
+          fi
+
+          if [ $EXIT_CODE -eq 0 ]; then
+            log_info "编译成功!"
+            echo "compile_completed=true" >> $GITHUB_OUTPUT
+          else
+            log_error "编译失败，退出码: $EXIT_CODE"
+            echo "compile_completed=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ---- 失败处理 ----
+      - name: 生成错误报告
+        if: steps.compile.outputs.compile_completed == 'false'
+        working-directory: ${{ inputs.workdir }}
+        run: |
+          {
+            echo "## 编译失败"
+            echo ""
+            echo "**设备:** $(source ${{ github.workspace }}/device.conf && echo $DEVICE_TITLE)"
+            echo "**配置:** ${{ needs.prepare.outputs.config_variant }}"
+            echo "**Runner:** ${{ inputs.runner }}"
+            echo ""
+            echo "### 关键错误 (最后 50 条)"
+            echo '```'
+            grep -inE "error:|error [0-9]+|fatal|collect2|No rule to make target|make\[[0-9]+\].*Error" make.log | tail -50 || echo "未匹配到关键错误"
+            echo '```'
+            echo ""
+            echo "### 日志末尾 100 行"
+            echo '```'
+            tail -100 make.log
+            echo '```'
+          } > error_report.md
+          cat error_report.md >> $GITHUB_STEP_SUMMARY
+
+      # ---- 成功处理 ----
+      - name: 打包固件
+        if: steps.compile.outputs.compile_completed == 'true'
+        working-directory: ${{ inputs.workdir }}
+        run: |
+          TARGET_PATH=$(find bin/targets -mindepth 2 -maxdepth 2 -type d | head -n 1)
+          if [ -z "$TARGET_PATH" ]; then
+            echo "::error::未找到编译输出目录"
+            exit 1
+          fi
+          TARGET_NAME="${TARGET_PATH#bin/targets/}"
+          echo "输出: $TARGET_PATH ($TARGET_NAME)"
+
+          7z a -mx=9 -mmt=$(nproc) bin.7z bin/
+          mv bin.7z make.log "$TARGET_PATH/"
+          cd "$TARGET_PATH" && rm -rf packages
+
+          echo "固件列表:"
+          ls -la *.bin *.img *.trx *.7z *.log 2>/dev/null || true
+
+          echo "TARGET_DIR=${TARGET_PATH}" >> $GITHUB_ENV
+          echo "TARGET_NAME=$TARGET_NAME" >> $GITHUB_ENV
+
+      # Cloud: 上传 Artifact + 发布 Release
+      - name: 上传固件 Artifact (Cloud)
+        if: inputs.upload_artifacts == 'true' && steps.compile.outputs.compile_completed == 'true'
+        uses: actions/upload-artifact@main
+        with:
+          name: immortalwrt-firmware-${{ github.run_id }}
+          path: ${{ inputs.workdir }}/${{ env.TARGET_DIR }}/
+          retention-days: 30
+
+      - name: 生成 Release 信息 (Cloud)
+        if: inputs.create_release == 'true' && steps.compile.outputs.compile_completed == 'true'
+        run: |
+          source "${{ github.workspace }}/device.conf"
+          BUILD_DATE=$(date +'%Y-%m-%d')
+          BUILD_TIME=$(date +'%Y-%m-%d %H:%M')
+          echo "RELEASE_NAME=ImmortalWrt $DEVICE_TITLE — ${BUILD_DATE} (${{ needs.prepare.outputs.config_variant }})" >> $GITHUB_ENV
+          {
+            echo "## ImmortalWrt Build"
+            echo "- **设备:** $DEVICE_TITLE"
+            echo "- **芯片:** $CHIP_NAME"
+            echo "- **配置:** ${{ needs.prepare.outputs.config_variant }}"
+            echo "- **日期:** ${BUILD_TIME}"
+            echo "- **源码:** $SOURCE_REPO ($SOURCE_BRANCH)"
+            echo ""
+            echo "### 预设选项"
+            echo "- OpenClash Meta 核心: ${{ inputs.preset_clash }}"
+            echo "- oh-my-zsh 终端工具: ${{ inputs.preset_zsh }}"
+            echo "- 快照初始化设置: ${{ inputs.preset_snapshot }}"
+            echo "- SmallWRT 品牌定制: ${{ inputs.preset_branding }}"
+            echo ""
+            echo "### 包含文件"
+            echo "- bin.7z (完整 bin 目录压缩包)"
+            echo "- 固件镜像 (factory/sysupgrade)"
+            echo "- make.log (编译日志)"
+          } > /tmp/release_body.md
+
+      - name: 发布 Release (Cloud)
+        if: inputs.create_release == 'true' && steps.compile.outputs.compile_completed == 'true'
+        uses: softprops/action-gh-release@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: release-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ env.RELEASE_NAME }}
+          body_path: /tmp/release_body.md
+          files: ${{ inputs.workdir }}/${{ env.TARGET_DIR }}/*
+          draft: false
+          prerelease: false
+
+      - name: 上传失败日志 (Cloud)
+        if: inputs.upload_artifacts == 'true' && steps.compile.outputs.compile_completed == 'false'
+        uses: actions/upload-artifact@main
+        with:
+          name: failed-build-log-${{ github.run_id }}
+          path: |
+            ${{ inputs.workdir }}/make.log
+            ${{ inputs.workdir }}/error_report.md
+          retention-days: 7
+
+      - name: 生成失败 Release 信息 (Cloud)
+        if: inputs.create_release == 'true' && steps.compile.outputs.compile_completed == 'false'
+        run: |
+          source "${{ github.workspace }}/device.conf"
+          BUILD_TIME=$(date +'%Y-%m-%d %H:%M')
+          echo "RELEASE_NAME=[编译失败] $DEVICE_TITLE - ${BUILD_TIME}" >> $GITHUB_ENV
+
+      - name: 发布失败草稿 Release (Cloud)
+        if: inputs.create_release == 'true' && steps.compile.outputs.compile_completed == 'false'
+        uses: softprops/action-gh-release@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: failed-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ env.RELEASE_NAME }}
+          body_path: ${{ inputs.workdir }}/error_report.md
+          files: |
+            ${{ inputs.workdir }}/make.log
+            ${{ inputs.workdir }}/error_report.md
+          draft: true
+          prerelease: true
+
+      # Self-Hosted: 产物存本地
+      - name: 保存产物到本地 (Self-Hosted)
+        if: inputs.runner == 'self-hosted' && steps.compile.outputs.compile_completed == 'true'
+        run: |
+          source "${{ github.workspace }}/device.conf"
+          ARTIFACT_DIR="/data/artifacts/$DEVICE_NAME/${{ needs.prepare.outputs.config_variant }}/$(date +%Y%m%d-%H%M)"
+          mkdir -p "$ARTIFACT_DIR"
+          cp -r ${{ inputs.workdir }}/${{ env.TARGET_DIR }}/* "$ARTIFACT_DIR/"
+          echo "产物已保存至: $ARTIFACT_DIR"
+          ls -la "$ARTIFACT_DIR/"

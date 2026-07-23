@@ -1,0 +1,85 @@
+# https://github.com/QC3284/openwrt-actions
+# clean-configs.yml — 清理旧编译配置，保留指定配置文件
+#
+# Copyright (c) 2026 QC3284 <https://www.xcqcoo.top>
+# Licensed under GNU GPLv3. See /LICENSE.
+
+name: 清理旧编译配置
+
+on:
+  schedule:
+    - cron: '0 15 * * 0'
+  workflow_dispatch:
+
+jobs:
+  clean:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@main
+        with:
+          fetch-depth: 1
+
+      - name: 清理旧配置
+        run: |
+          source "${{ github.workspace }}/device.conf"
+
+          CONFIG_DIR="${{ github.workspace }}/configs"
+          ARCHIVE_DIR="${{ github.workspace }}/configs/archive"
+
+          # 需要保留的配置文件列表 (在此添加需永久保留的文件)
+          KEEP_FILES=(
+            "${CONFIG_PREFIX}-full.config"
+            "${CONFIG_PREFIX}-seed.config"
+          )
+
+          if [ ! -d "$CONFIG_DIR" ]; then
+            echo "配置目录不存在: $CONFIG_DIR"
+            exit 0
+          fi
+
+          mkdir -p "$ARCHIVE_DIR"
+
+          echo "设备: $DEVICE_TITLE"
+          echo "配置匹配前缀: ${CONFIG_PREFIX}-"
+          echo ""
+          echo "保留配置:"
+          for f in "${KEEP_FILES[@]}"; do
+            echo "  ✓ $f"
+          done
+          echo ""
+
+          MOVED=0
+          while IFS= read -r -d '' file; do
+            filename=$(basename "$file")
+            keep=false
+            for kf in "${KEEP_FILES[@]}"; do
+              [ "$filename" = "$kf" ] && keep=true && break
+            done
+
+            if $keep; then
+              echo "保留: $filename"
+            else
+              echo "归档: $filename -> archive/"
+              mv "$file" "$ARCHIVE_DIR/"
+              MOVED=$((MOVED + 1))
+            fi
+          done < <(find "$CONFIG_DIR" -maxdepth 1 -type f -name "*.config" -print0)
+
+          echo ""
+          echo "========== 清理完成 =========="
+          echo "保留 ${#KEEP_FILES[@]} 个配置，归档 $MOVED 个旧配置"
+
+      - name: 提交变更
+        run: |
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "无变更，跳过提交"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add configs/
+          git commit -m "Clean old build configs [skip ci]
+
+          - 保留指定配置文件，其余归档至 configs/archive/"
+          git push

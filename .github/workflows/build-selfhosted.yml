@@ -1,0 +1,56 @@
+# build-selfhosted.yml — SmallWRT 固件编译 (自托管 Runner)
+#
+# 仅手动触发，使用用户自托管 runner 执行编译。
+# 产物保存到本地 /data/artifacts/，不上传 GitHub。
+# 源码保留在 /data/openwrt/ 支持增量编译。
+#
+# 使用前请确保自托管 runner 已安装所有编译依赖。
+# Licensed under GNU GPLv3. See /LICENSE.
+
+name: Self-Hosted Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      config_variant:
+        description: '配置文件变体'
+        required: true
+        type: choice
+        default: 'full'
+        options:
+          - full
+          - seed
+      preset_clash:
+        description: '预置 OpenClash Meta 核心 + GeoIP 数据'
+        type: boolean
+        default: true
+      preset_zsh:
+        description: '预置 oh-my-zsh 终端工具'
+        type: boolean
+        default: true
+      preset_snapshot:
+        description: '预置快照初始化设置'
+        type: boolean
+        default: true
+      preset_branding:
+        description: 'SmallWRT 品牌定制'
+        type: boolean
+        default: true
+
+jobs:
+  call:
+    name: Self-Hosted Build (${{ github.event.inputs.config_variant }})
+    uses: ./.github/workflows/compile.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      runner: 'self-hosted'
+      workdir: '/data/openwrt'
+      upload_artifacts: 'false'
+      create_release: 'false'
+      config_variant: ${{ github.event.inputs.config_variant }}
+      preset_clash: ${{ github.event.inputs.preset_clash }}
+      preset_zsh: ${{ github.event.inputs.preset_zsh }}
+      preset_snapshot: ${{ github.event.inputs.preset_snapshot }}
+      preset_branding: ${{ github.event.inputs.preset_branding }}

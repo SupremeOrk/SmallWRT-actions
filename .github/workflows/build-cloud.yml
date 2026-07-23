@@ -1,0 +1,57 @@
+# build-cloud.yml — SmallWRT 固件编译 (GitHub 云 Runner)
+#
+# 定时或手动触发，使用 GitHub 托管 ubuntu-24.04 执行编译。
+# 自动上传产物 Artifact 并发布 Release。
+#
+# Licensed under GNU GPLv3. See /LICENSE.
+
+name: Cloud Build
+
+on:
+  schedule:
+    - cron: '0 3 * * 3,6'
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      config_variant:
+        description: '配置文件变体'
+        required: true
+        type: choice
+        default: 'full'
+        options:
+          - full
+          - seed
+      preset_clash:
+        description: '预置 OpenClash Meta 核心 + GeoIP 数据'
+        type: boolean
+        default: true
+      preset_zsh:
+        description: '预置 oh-my-zsh 终端工具'
+        type: boolean
+        default: true
+      preset_snapshot:
+        description: '预置快照初始化设置'
+        type: boolean
+        default: true
+      preset_branding:
+        description: 'SmallWRT 品牌定制'
+        type: boolean
+        default: true
+
+jobs:
+  call:
+    name: Cloud Build (${{ github.event.inputs.config_variant || 'full' }})
+    uses: ./.github/workflows/compile.yml
+    permissions:
+      contents: write
+      actions: read
+    with:
+      runner: 'ubuntu-24.04'
+      workdir: '/workdir/openwrt'
+      upload_artifacts: 'true'
+      create_release: 'true'
+      config_variant: ${{ github.event.inputs.config_variant || 'full' }}
+      preset_clash: ${{ github.event.inputs.preset_clash || 'true' }}
+      preset_zsh: ${{ github.event.inputs.preset_zsh || 'true' }}
+      preset_snapshot: ${{ github.event.inputs.preset_snapshot || 'true' }}
+      preset_branding: ${{ github.event.inputs.preset_branding || 'true' }}
