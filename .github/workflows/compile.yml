@@ -224,6 +224,23 @@ jobs:
           bash "${{ github.workspace }}/scripts/diy/02-replace-openclash.sh"
           ./scripts/feeds install -a
 
+      # luci-app-mtk is not selected by this configuration, but its upstream
+      # recipe references the no-longer-provided libmapd package.  Strip only
+      # that inactive dependency to avoid an unrelated global parse warning.
+      - name: 清理未选用的 luci-app-mtk 依赖
+        working-directory: ${{ inputs.workdir }}
+        run: |
+          set -euo pipefail
+          CONFIG_FILE="${{ needs.prepare.outputs.config_file }}"
+          RECIPE="package/mtk/applications/luci-app-mtk/Makefile"
+
+          if grep -qx 'CONFIG_PACKAGE_luci-app-mtk=y' "$CONFIG_FILE"; then
+            echo "luci-app-mtk 已启用，保留其原始依赖声明"
+          elif [ -f "$RECIPE" ]; then
+            sed -i -E 's/\+PACKAGE_libmapd:libmapd[[:space:]]*//g' "$RECIPE"
+            echo "已移除未选用 luci-app-mtk 的失效 libmapd 依赖声明"
+          fi
+
       # The upstream l1parser recipe currently contains a stale mirror hash.
       # Generate its pinned source archive once, then use its verified local
       # checksum so the normal package build can proceed reproducibly.
@@ -277,6 +294,26 @@ jobs:
           cp -r "${{ github.workspace }}/files"/* ./files/
 
           echo "config_ready=true" >> $GITHUB_OUTPUT
+
+      # kmod-mt_wifi7 requires wifi-profile for calibration data, while the
+      # selected mtwifi-cfg ucode frontend requires wifi-scripts.  Both
+      # upstream packages install /sbin/wifi, which APK correctly rejects.
+      # Keep wifi-profile and its MTK data, but let wifi-scripts own that
+      # command when the ucode frontend is selected.
+      - name: 解决 MTK Wi-Fi 脚本冲突
+        working-directory: ${{ inputs.workdir }}
+        run: |
+          set -euo pipefail
+          RECIPE="package/mtk/drivers/wifi-profile/Makefile"
+
+          if grep -qx 'CONFIG_PACKAGE_luci-app-mtwifi-cfg=y' .config && [ -f "$RECIPE" ]; then
+            sed -i -E \
+              -e '/\$\(INSTALL_BIN\) \.\/files\/unified_script\/wifi \$\(1\)\/sbin\//d' \
+              -e '/\$\(INSTALL_BIN\) \.\/files\/common\/wifi_jedi \$\(1\)\/sbin\/wifi/d' \
+              "$RECIPE"
+            make package/mtk/drivers/wifi-profile/clean
+            echo "已保留 wifi-profile 的 MTK 数据，并由 wifi-scripts 提供 /sbin/wifi"
+          fi
 
       # ---- 预设脚本 ----
       - name: 执行构建预设
