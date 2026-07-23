@@ -224,6 +224,44 @@ jobs:
           bash "${{ github.workspace }}/scripts/diy/02-replace-openclash.sh"
           ./scripts/feeds install -a
 
+      # The upstream l1parser recipe currently contains a stale mirror hash.
+      # Generate its pinned source archive once, then use its verified local
+      # checksum so the normal package build can proceed reproducibly.
+      - name: 修复 l1parser 源码归档校验
+        working-directory: ${{ inputs.workdir }}
+        run: |
+          set -euo pipefail
+
+          RECIPE="package/mtk/applications/l1parser/Makefile"
+          SOURCE_VERSION=$(sed -n 's/^PKG_SOURCE_VERSION:=//p' "$RECIPE" | cut -c1-8)
+          EXPECTED_HASH=$(sed -n 's/^PKG_MIRROR_HASH:=//p' "$RECIPE")
+          ARCHIVE=$(find dl -maxdepth 1 -type f -name "l1parser-*~${SOURCE_VERSION}.tar.zst" -print -quit)
+
+          if [ -z "$ARCHIVE" ]; then
+            set +e
+            make package/mtk/applications/l1parser/download V=s
+            DOWNLOAD_STATUS=$?
+            set -e
+            if [ "$DOWNLOAD_STATUS" -eq 0 ]; then
+              echo "l1parser 源码归档下载完成且校验通过"
+              exit 0
+            fi
+            ARCHIVE=$(find dl -maxdepth 1 -type f -name "l1parser-*~${SOURCE_VERSION}.tar.zst" -print -quit)
+          fi
+
+          if [ -z "$ARCHIVE" ] || [ ! -f "$ARCHIVE" ]; then
+            echo "::error::l1parser 源码归档下载失败，未找到 l1parser-*~${SOURCE_VERSION}.tar.zst"
+            exit 1
+          fi
+
+          ACTUAL_HASH=$(sha256sum "$ARCHIVE" | awk '{print $1}')
+          if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+            echo "::warning::l1parser 上游校验值已变化，更新为本地归档哈希: $ACTUAL_HASH"
+            sed -i "s/^PKG_MIRROR_HASH:=.*/PKG_MIRROR_HASH:=$ACTUAL_HASH/" "$RECIPE"
+          fi
+
+          make package/mtk/applications/l1parser/download V=s
+
       # ---- 配置 ----
       - name: 准备编译配置
         id: config
@@ -298,6 +336,8 @@ jobs:
           THREAD_COUNT=$(($(nproc) + 1))
           log_info "开始编译 ($THREAD_COUNT 线程)..."
 
+          rm -f make.log error_report.md
+
           make -j$THREAD_COUNT 2>&1 | tee make.log
           EXIT_CODE=${PIPESTATUS[0]}
 
@@ -313,11 +353,12 @@ jobs:
           else
             log_error "编译失败，退出码: $EXIT_CODE"
             echo "compile_completed=false" >> $GITHUB_OUTPUT
+            exit "$EXIT_CODE"
           fi
 
       # ---- 失败处理 ----
       - name: 生成错误报告
-        if: steps.compile.outputs.compile_completed == 'false'
+        if: failure() && steps.compile.outputs.compile_completed == 'false'
         working-directory: ${{ inputs.workdir }}
         run: |
           {
