@@ -198,17 +198,16 @@ jobs:
 
       # ---- 源码 ----
       - name: 拉取源码
-        working-directory: ${{ inputs.workdir }}
         run: |
           source "${{ github.workspace }}/device.conf"
-          if [ -d "openwrt/.git" ]; then
+          if [ -d "${{ inputs.workdir }}/.git" ]; then
             echo "检测到已有源码，增量更新..."
-            cd openwrt
+            cd "${{ inputs.workdir }}"
             git fetch origin "$SOURCE_BRANCH"
             git reset --hard "origin/$SOURCE_BRANCH"
           else
-            rm -rf openwrt
-            git clone --branch "$SOURCE_BRANCH" "$SOURCE_REPO" openwrt
+            rm -rf "${{ inputs.workdir }}"
+            git clone --branch "$SOURCE_BRANCH" "$SOURCE_REPO" "${{ inputs.workdir }}"
           fi
 
       - name: 链接源码目录
