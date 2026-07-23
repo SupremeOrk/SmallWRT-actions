@@ -148,7 +148,7 @@ Cloud 和 Self-Hosted 工作流共享相同的输入参数：
 | 模式 | Workflow | Runner | 产物 | 触发 |
 | ---- | -------- | ------ | ---- | ---- |
 | **Cloud** | `build-cloud.yml` | GitHub `ubuntu-24.04` | Artifact + Release | 定时 + 手动 + API |
-| **Self-Hosted** | `build-selfhosted.yml` | 用户自托管 `self-hosted` | 本地 `/data/artifacts/` | 手动 |
+| **Self-Hosted** | `build-selfhosted.yml` | 用户自托管 `self-hosted` | 本地 `/srv/workspace/.smallwrt-actions/artifacts/` | 手动 |
 
 ### Cloud (`build-cloud.yml`)
 - 每次重新安装依赖，全新编译
@@ -157,8 +157,8 @@ Cloud 和 Self-Hosted 工作流共享相同的输入参数：
 
 ### Self-Hosted (`build-selfhosted.yml`)
 - 依赖预装，跳过 apt-get
-- 源码持久化到 `/data/openwrt/`（增量拉取）
-- 产物保存到 `/data/artifacts/<device>/<variant>/<date>/`
+- 源码持久化到 `/srv/workspace/.smallwrt-actions/openwrt/`（增量拉取）
+- 产物保存到 `/srv/workspace/.smallwrt-actions/artifacts/<device>/<variant>/<date>/`
 - 1440 分钟（24h）超时，不上传 Release
 
 ## 触发方式

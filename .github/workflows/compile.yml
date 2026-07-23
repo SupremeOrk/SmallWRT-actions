@@ -16,6 +16,9 @@ on:
       workdir:
         type: string
         default: '/workdir/openwrt'
+      artifact_dir:
+        type: string
+        default: '/data/artifacts'
       upload_artifacts:
         type: string
         default: 'true'
@@ -445,7 +448,7 @@ jobs:
         if: inputs.runner == 'self-hosted' && steps.compile.outputs.compile_completed == 'true'
         run: |
           source "${{ github.workspace }}/device.conf"
-          ARTIFACT_DIR="/data/artifacts/$DEVICE_NAME/${{ needs.prepare.outputs.config_variant }}/$(date +%Y%m%d-%H%M)"
+          ARTIFACT_DIR="${{ inputs.artifact_dir }}/$DEVICE_NAME/${{ needs.prepare.outputs.config_variant }}/$(date +%Y%m%d-%H%M)"
           mkdir -p "$ARTIFACT_DIR"
           cp -r ${{ inputs.workdir }}/${{ env.TARGET_DIR }}/* "$ARTIFACT_DIR/"
           echo "产物已保存至: $ARTIFACT_DIR"

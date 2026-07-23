@@ -50,6 +50,7 @@ jobs:
       # This runner stores its incremental source tree in the writable
       # workspace volume; /data is not available on the build host.
       workdir: '/srv/workspace/.smallwrt-actions/openwrt'
+      artifact_dir: '/srv/workspace/.smallwrt-actions/artifacts'
       upload_artifacts: 'false'
       create_release: 'false'
       config_variant: ${{ github.event.inputs.config_variant }}
