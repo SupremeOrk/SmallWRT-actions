@@ -11,6 +11,9 @@ FILES_DIR="${OPENWRT_DIR:-.}/files"
 mkdir -p "$FILES_DIR/root"
 pushd "$FILES_DIR/root"
 
+# 清理旧残留 (self-hosted 持久化存储)
+rm -rf ./.oh-my-zsh
+
 # Clone oh-my-zsh
 git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh ./.oh-my-zsh
 
