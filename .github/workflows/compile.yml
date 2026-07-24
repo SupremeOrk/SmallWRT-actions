@@ -430,12 +430,20 @@ jobs:
           TARGET_NAME="${TARGET_PATH#bin/targets/}"
           echo "输出: $TARGET_PATH ($TARGET_NAME)"
 
-          7z a -mx=9 -mmt=$(nproc) bin.7z bin/
-          mv bin.7z make.log "$TARGET_PATH/"
+          if command -v 7z >/dev/null 2>&1; then
+            ARCHIVE_FILE="bin.7z"
+            7z a -mx=9 -mmt=$(nproc) "$ARCHIVE_FILE" bin/
+          else
+            ARCHIVE_FILE="bin.zip"
+            echo "::warning::未找到 7z，改用 zip 打包完整 bin 目录"
+            zip -q -r -9 "$ARCHIVE_FILE" bin/
+          fi
+
+          mv "$ARCHIVE_FILE" make.log "$TARGET_PATH/"
           cd "$TARGET_PATH" && rm -rf packages
 
           echo "固件列表:"
-          ls -la *.bin *.img *.trx *.7z *.log 2>/dev/null || true
+          ls -la *.bin *.img *.trx *.7z *.zip *.log 2>/dev/null || true
 
           echo "TARGET_DIR=${TARGET_PATH}" >> $GITHUB_ENV
           echo "TARGET_NAME=$TARGET_NAME" >> $GITHUB_ENV
@@ -471,7 +479,7 @@ jobs:
             echo "- SmallWRT 品牌定制: ${{ inputs.preset_branding }}"
             echo ""
             echo "### 包含文件"
-            echo "- bin.7z (完整 bin 目录压缩包)"
+            echo "- bin.7z 或 bin.zip (完整 bin 目录压缩包)"
             echo "- 固件镜像 (factory/sysupgrade)"
             echo "- make.log (编译日志)"
           } > /tmp/release_body.md
